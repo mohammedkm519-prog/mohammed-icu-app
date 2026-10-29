@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>نظام مراقبة المرضى الذكي</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0A2E2C">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="MZ ICU">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
@@ -11,6 +19,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js" crossorigin="anonymous"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js" crossorigin="anonymous"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js" crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" crossorigin="anonymous"></script>
 <style>
@@ -119,6 +128,17 @@
   .day-section ul{margin:0;padding-inline-start:18px;}
   .med-chip{display:inline-flex;align-items:center;gap:4px;background:#EAF3DE;color:#27500A;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600;margin-inline-end:4px;margin-bottom:4px;}
   @keyframes toastIn{from{transform:translateY(-12px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+  .in-app-toast{background:#fff;color:var(--text);padding:10px 12px;border-radius:14px;box-shadow:0 10px 28px rgba(0,0,0,.28);width:440px;max-width:96vw;display:flex;align-items:center;gap:10px;animation:toastDrop .28s cubic-bezier(.2,.9,.3,1.2);cursor:pointer;pointer-events:auto;border-inline-start:5px solid var(--brand);}
+  .in-app-toast.urgent{background:#7A1F1D;color:#fff;border-inline-start-color:#FF6B5E;animation:toastDrop .28s cubic-bezier(.2,.9,.3,1.2), urgentPulse 1.2s ease-in-out infinite .3s;}
+  @keyframes toastDrop{from{transform:translateY(-120%);opacity:0;}to{transform:translateY(0);opacity:1;}}
+  @keyframes urgentPulse{0%,100%{box-shadow:0 10px 28px rgba(0,0,0,.28),0 0 0 0 rgba(255,107,94,.6);}50%{box-shadow:0 10px 28px rgba(0,0,0,.28),0 0 0 8px rgba(255,107,94,0);}}
+  .notif-row{padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;gap:10px;align-items:flex-start;position:relative;}
+  .notif-row:hover{background:#F4F7F6;}
+  .notif-row.unread{background:#EEF7F4;}
+  .unread-dot{width:9px;height:9px;border-radius:50%;background:#1E6FD9;flex-shrink:0;margin-top:6px;}
+  .bell-ringing{display:inline-block;animation:bellShake 1s ease-in-out infinite;transform-origin:50% 0;}
+  @keyframes bellShake{0%,50%,100%{transform:rotate(0);}10%,30%{transform:rotate(14deg);}20%,40%{transform:rotate(-14deg);}}
+
   .score-num{font-family:var(--font-mono);font-size:26px;font-weight:700;}
   .score-label{font-size:12px;color:rgba(255,255,255,.55);}
 
@@ -200,7 +220,7 @@
       <i class="ti ti-pill" style="color:#F0B429;" aria-hidden="true"></i>
     </div>
     <h1 id="appTitle">M Z Smart ICU</h1>
-    <span id="appVer" style="font-size:10px;opacity:.55;align-self:center;direction:ltr;">v30-Oct-b</span>
+    <span id="appVer" style="font-size:10px;opacity:.55;align-self:center;direction:ltr;">v30-Oct-push</span>
   </div>
   <div class="controls">
     <select id="langSwitch" onchange="setLanguage(this.value)">
@@ -1122,7 +1142,8 @@ async function loginWithPassword(username, password, expectedRole){
     } else if(errEl) errEl.textContent = t('wrongCredentials');
   }
 }
-function logout(){
+async function logout(){
+  await removePushTokenOnLogout();
   fbAuth.signOut();
   if(patientsUnsubscribe){ patientsUnsubscribe(); patientsUnsubscribe = null; }
   unsubscribeNotifications();
@@ -1784,13 +1805,15 @@ function render(){
   const notifBtn = document.getElementById('notifBtn');
   const notifIcon = document.getElementById('notifBellIcon');
   if('Notification' in window){
-    if(Notification.permission === 'granted'){ notifIcon.className = 'ti ti-bell-check'; notifBtn.title = t('notificationsOn'); }
+    if(Notification.permission === 'granted'){ notifIcon.className = 'ti ti-bell'; notifBtn.title = t('notificationsOn'); }
     else if(Notification.permission === 'denied'){ notifIcon.className = 'ti ti-bell-x'; notifBtn.title = t('notificationsBlocked'); }
     else { notifIcon.className = 'ti ti-bell'; notifBtn.title = t('enableNotifications'); }
-  } else { notifBtn.style.display = 'none'; }
+  } else { notifIcon.className = 'ti ti-bell'; }
 
   if(!currentUser){ ensureSeedAdmin().then(() => renderLogin(app)); return; }
   if(!patientsUnsubscribe){ subscribePatients(); migratePatientsIfNeeded(); subscribeAllVitals(); subscribeAllOrders(); subscribeNotifications(); subscribeAiConfig(); }
+  updateUnreadCount();
+  if(pendingNotifGo) runPendingNotifGo();
   if(currentPage === 'userManagement' && currentUser.role === 'admin'){ renderUserManagement(app); return; }
   if(currentPage === 'voiceRecordings' && currentUser.role === 'admin'){ renderVoiceRecordings(app); return; }
   if(currentPage === 'satisfactionSurvey'){ renderSatisfactionSurvey(app); return; }
@@ -1869,135 +1892,7 @@ function subscribeAllOrders(){
    اشتراك عام (مو مقيّد بمريض واحد) على الأوامر والملاحظات، مع تمييز الإضافات
    الجديدة فعليًا (docChanges) عن التحميل الأولي، حتى ما نرسل إشعارات وهمية
    لبيانات موجودة أصلًا لحظة فتح التطبيق. */
-let notifOrdersUnsub = null, notifNotesUnsub = null;
-let notifOrdersFirstLoad = true, notifNotesFirstLoad = true;
-/* تنبيه صوتي بسيط (نغمة قصيرة مولّدة برمجيًا - ما يحتاج ملف صوت خارجي) */
-function playAlertTone(urgent){
-  try{
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const beeps = urgent ? [880, 660, 880] : [880];
-    beeps.forEach((freq, i) => {
-      const start = ctx.currentTime + i * 0.22;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.15, start);
-      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.18);
-      osc.start(start); osc.stop(start + 0.18);
-    });
-  }catch(err){ console.warn('alert tone failed:', err.message); }
-  if(urgent && navigator.vibrate){ try{ navigator.vibrate([200,100,200,100,200]); }catch(e){} }
-}
-let unreadNotifCount = 0;
-let notificationHistory = []; // {id, kind, urgent, patientId, patientName, title, body, tab, time}
-function bumpNotifBadge(){
-  unreadNotifCount++;
-  const badge = document.getElementById('notifBadge');
-  if(badge){ badge.textContent = unreadNotifCount; badge.style.display = 'flex'; }
-}
-function clearNotifBadge(){
-  unreadNotifCount = 0;
-  const badge = document.getElementById('notifBadge');
-  if(badge) badge.style.display = 'none';
-}
-/* الانتقال المباشر لمكان التنبيه (مريض + تبويب محدد) من أي مكان بالتطبيق */
-function goToNotificationTarget(patientId, tab){
-  closeNotifPanel();
-  document.querySelectorAll('.in-app-toast').forEach(el => el.remove());
-  if(!patientId) return;
-  openPatient(patientId);
-  currentTab = tab || 'tabOverview';
-  render();
-}
-function notifKindIcon(kind, urgent){
-  if(urgent) return 'ti-alert-triangle';
-  return kind === 'order' ? 'ti-clipboard-list' : 'ti-notes';
-}
-/* شريط تنبيه داخل الصفحة نفسها - يشتغل بكل الأجهزة بلا استثناء (حتى آيفون)
-   لأنه مجرد عنصر HTML عادي، مش إشعار نظام تفرضه قيود المتصفح/النظام.
-   قابل للنقر - ينقل مباشرة لمكان المشكلة (المريض + التبويب المعني). */
-function showInAppToast(entry){
-  playAlertTone(entry.urgent);
-  bumpNotifBadge();
-  let wrap = document.getElementById('inAppToastWrap');
-  if(!wrap){
-    wrap = document.createElement('div');
-    wrap.id = 'inAppToastWrap';
-    wrap.style.cssText = 'position:fixed;top:66px;inset-inline:0;z-index:100;display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:none;';
-    document.body.appendChild(wrap);
-  }
-  const toast = document.createElement('div');
-  toast.className = 'in-app-toast';
-  const bg = entry.urgent ? '#7A1F1D' : 'var(--ink)';
-  toast.style.cssText = `background:${bg};color:#fff;padding:10px 16px;border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,.25);max-width:90vw;font-size:13.5px;display:flex;align-items:center;gap:8px;animation:toastIn .2s ease-out;cursor:pointer;pointer-events:auto;`;
-  toast.innerHTML = `<i class="ti ${notifKindIcon(entry.kind, entry.urgent)}" style="color:${entry.urgent?'#F5C6C4':'#3ED598'};flex-shrink:0;font-size:18px;"></i><div><b>${entry.title}</b><div style="opacity:.85;">${entry.body}</div><div style="opacity:.6;font-size:11px;margin-top:2px;">${t('tapToOpen')}</div></div>`;
-  toast.onclick = () => goToNotificationTarget(entry.patientId, entry.tab);
-  wrap.appendChild(toast);
-  setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity .4s'; setTimeout(()=>toast.remove(), 400); }, entry.urgent ? 12000 : 7000);
-}
-function showBrowserNotification(entry){
-  entry.id = uid();
-  entry.time = Date.now();
-  notificationHistory.unshift(entry);
-  if(notificationHistory.length > 30) notificationHistory.length = 30;
-  showInAppToast(entry);
-  refreshNotifPanel();
-  if(!('Notification' in window) || Notification.permission !== 'granted') return;
-  try{
-    const sysNotif = new Notification(entry.title, { body: entry.body });
-    sysNotif.onclick = () => { window.focus(); goToNotificationTarget(entry.patientId, entry.tab); };
-  }catch(err){ console.warn('notification failed:', err.message); }
-}
-function requestNotificationPermission(){
-  if(!('Notification' in window)) return;
-  Notification.requestPermission().then(() => render());
-}
-function onNotifBellClick(){
-  clearNotifBadge();
-  if('Notification' in window && Notification.permission === 'default') requestNotificationPermission();
-  toggleNotifPanel();
-}
-function toggleNotifPanel(){
-  const existing = document.getElementById('notifPanel');
-  if(existing){ existing.remove(); return; }
-  const panel = document.createElement('div');
-  panel.id = 'notifPanel';
-  panel.style.cssText = 'position:fixed;top:56px;inset-inline-end:14px;z-index:110;background:#fff;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.25);width:320px;max-width:92vw;max-height:70vh;overflow-y:auto;';
-  document.body.appendChild(panel);
-  refreshNotifPanel();
-  setTimeout(() => { document.addEventListener('click', closeNotifPanelOnOutsideClick); }, 0);
-}
-function closeNotifPanelOnOutsideClick(e){
-  const panel = document.getElementById('notifPanel');
-  const bell = document.getElementById('notifBtn');
-  if(panel && !panel.contains(e.target) && !bell.contains(e.target)){ closeNotifPanel(); }
-}
-function closeNotifPanel(){
-  const panel = document.getElementById('notifPanel');
-  if(panel) panel.remove();
-  document.removeEventListener('click', closeNotifPanelOnOutsideClick);
-}
-function refreshNotifPanel(){
-  const panel = document.getElementById('notifPanel');
-  if(!panel) return;
-  if(!notificationHistory.length){
-    panel.innerHTML = `<div style="padding:20px;text-align:center;" class="muted">${t('noNotifications')}</div>`;
-    return;
-  }
-  panel.innerHTML = `
-    <div style="padding:10px 14px;font-weight:600;border-bottom:1px solid var(--border);">${t('notificationsTitle')}</div>
-    ${notificationHistory.map(n => `
-      <div onclick="goToNotificationTarget('${n.patientId||''}','${n.tab||''}')" style="padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;gap:10px;align-items:flex-start;" onmouseover="this.style.background='#F4F7F6'" onmouseout="this.style.background=''">
-        <i class="ti ${notifKindIcon(n.kind, n.urgent)}" style="color:${n.urgent?'var(--danger)':'var(--brand)'};font-size:18px;margin-top:2px;"></i>
-        <div style="flex:1;min-width:0;">
-          <div style="font-weight:600;font-size:13px;">${n.title} ${n.urgent?`<span class="badge crit">${t('urgent')}</span>`:''}</div>
-          <div class="muted" style="font-size:12.5px;">${n.body}</div>
-          <div class="muted" style="font-size:11px;margin-top:2px;">${new Date(n.time).toLocaleTimeString(lang)}</div>
-        </div>
-      </div>`).join('')}
-  `;
-}
+/* (أُعيد بناء نظام الإشعارات بالكامل — انظر "نظام الإشعارات v2" أدناه) */
 /* ---------- نظام الورديات: يحدد بوضوح مين الممرض المسؤول عن كل مريض بأي لحظة ----------
    3 ورديات ثابتة باليوم (صباحية 8-16، مسائية 16-24، ليلية 0-8) - كل مريض عنده
    ممرض معيّن لكل وردية من الثلاث، والنظام يحسب تلقائيًا مين المسؤول "الآن"
@@ -2020,53 +1915,697 @@ function isRelevantToMe(patient){
   if(!patient) return true; // احتياطًا لو ما لقينا المريض بالذاكرة المؤقتة بعد
   if(currentUser.role === 'admin') return true;
   if(patient.assignedDoctor?.uid === currentUser.id) return true;
+  if(currentUser.role === 'doctor' && !patient.assignedDoctor?.uid) return true;
   const shiftNurse = getCurrentShiftNurse(patient);
+  if(currentUser.role === 'nurse' && !shiftNurse?.uid) return true;
   return shiftNurse?.uid === currentUser.id;
 }
-function subscribeNotifications(){
-  if(!notifOrdersUnsub){
-    notifOrdersUnsub = fbDb.collection('orders').onSnapshot(snap => {
-      if(!notifOrdersFirstLoad){
-        snap.docChanges().forEach(change => {
-          if(change.type === 'added'){
-            const o = change.doc.data();
-            const patient = patientsCache.find(x=>x.id===o.patientId);
-            if(o.createdBy?.username !== currentUser.username && isRelevantToMe(patient)){
-              showBrowserNotification({
-                kind:'order', urgent:true, patientId:o.patientId, patientName: patient?patient.name:'',
-                title: t('newOrderNotifTitle'), body: `${o.medName} - ${patient?patient.name:''}`, tab:'tabOrders'
-              });
-            }
-          }
-        });
-      }
-      notifOrdersFirstLoad = false;
-    }, err => console.warn('order notif sync error:', err.message));
+/* ======================================================================
+   نظام الإشعارات v2 — M Z Smart ICU
+   - إشعارات فورية داخل التطبيق (بطاقة مثل واتساب + صوت جرس + اهتزاز)
+   - إشعارات نظام حقيقية تصل والشاشة مقفلة أو التطبيق مغلق (Web Push عبر Firebase Cloud Messaging)
+   - سجل تنبيهات محفوظ (مقروء/غير مقروء) + عدّاد فوق الجرس + عدّاد على أيقونة التطبيق
+   - الضغط على أي تنبيه ينقلك مباشرة للمريض والتبويب المعني
+   - خيار "إبقاء الشاشة مضاءة" لجهاز محطة التمريض
+   ====================================================================== */
+const NT = {
+  ar:{ newOrder:'أمر طبي جديد', newNote:'ملاحظة جديدة', urgentNote:'⚠️ ملاحظة عاجلة', newLab:'نتيجة تحليل جديدة', newLabs:'نتائج تحاليل جديدة',
+       newPatient:'مريض جديد', messageFrom:'رسالة من', urgentMessage:'⚠️ رسالة عاجلة من', open:'فتح', markRead:'تم الاطلاع',
+       markAllRead:'تحديد الكل كمقروء', sendMessage:'إرسال رسالة', toAll:'الكل (جميع الكادر)', recipient:'إلى', messageText:'نص الرسالة',
+       attachImage:'إرفاق صورة', linkPatient:'ربط بمريض (اختياري)', none:'بدون', send:'إرسال', cancel:'إلغاء', sent:'تم الإرسال',
+       deviceStatus:'حالة الإشعارات على هذا الجهاز', pushOn:'مفعّلة: تصلك التنبيهات حتى والشاشة مقفلة', pushOff:'غير مفعّلة على هذا الجهاز',
+       pushNoConfig:'تعمل داخل التطبيق فقط — لم يُضبط خادم الإشعارات بعد (من إعدادات المدير)', pushBlocked:'محظورة من إعدادات المتصفح — افتح إعدادات الموقع واسمح بالإشعارات',
+       pushUnsupported:'هذا المتصفح لا يدعم الإشعارات الخارجية', iosHint:'على آيفون: اضغط زر المشاركة ثم «إضافة إلى الشاشة الرئيسية»، وافتح التطبيق من الأيقونة ثم فعّل الإشعارات',
+       enableOnDevice:'تفعيل الإشعارات على هذا الجهاز', testAlert:'تجربة التنبيه', testTitle:'تجربة تنبيه', testBody:'هذا تنبيه تجريبي — إذا سمعت الجرس فكل شيء يعمل',
+       keepAwake:'إبقاء الشاشة مضاءة (لجهاز محطة التمريض)', installApp:'تثبيت التطبيق على الشاشة الرئيسية', pushSettings:'إعدادات خادم الإشعارات (للمدير)',
+       workerUrl:'رابط خادم الإرسال (Cloudflare Worker)', vapidKey:'مفتاح Web Push (VAPID) من Firebase', save:'حفظ', saved:'تم الحفظ',
+       justNow:'الآن', minAgo:'د', hourAgo:'س', stopRing:'إيقاف الجرس', patient:'المريض', noPatient:'—' },
+  en:{ newOrder:'New medical order', newNote:'New note', urgentNote:'⚠️ Urgent note', newLab:'New lab result', newLabs:'New lab results',
+       newPatient:'New patient', messageFrom:'Message from', urgentMessage:'⚠️ Urgent message from', open:'Open', markRead:'Mark read',
+       markAllRead:'Mark all read', sendMessage:'Send message', toAll:'Everyone (all staff)', recipient:'To', messageText:'Message',
+       attachImage:'Attach image', linkPatient:'Link to patient (optional)', none:'None', send:'Send', cancel:'Cancel', sent:'Sent',
+       deviceStatus:'Notifications on this device', pushOn:'On: alerts arrive even when the screen is locked', pushOff:'Not enabled on this device',
+       pushNoConfig:'In-app only — the push server is not configured yet (admin settings)', pushBlocked:'Blocked in browser settings — allow notifications for this site',
+       pushUnsupported:'This browser does not support push notifications', iosHint:'On iPhone: tap Share → "Add to Home Screen", open the app from the icon, then enable notifications',
+       enableOnDevice:'Enable notifications on this device', testAlert:'Test alert', testTitle:'Test alert', testBody:'This is a test — if you heard the bell, everything works',
+       keepAwake:'Keep screen on (nurse station device)', installApp:'Install app to home screen', pushSettings:'Push server settings (admin)',
+       workerUrl:'Sender URL (Cloudflare Worker)', vapidKey:'Web Push key (VAPID) from Firebase', save:'Save', saved:'Saved',
+       justNow:'now', minAgo:'m', hourAgo:'h', stopRing:'Stop bell', patient:'Patient', noPatient:'—' },
+  tr:{ newOrder:'Yeni tıbbi order', newNote:'Yeni not', urgentNote:'⚠️ Acil not', newLab:'Yeni tahlil sonucu', newLabs:'Yeni tahlil sonuçları',
+       newPatient:'Yeni hasta', messageFrom:'Mesaj:', urgentMessage:'⚠️ Acil mesaj:', open:'Aç', markRead:'Okundu',
+       markAllRead:'Tümünü okundu yap', sendMessage:'Mesaj gönder', toAll:'Herkes (tüm ekip)', recipient:'Alıcı', messageText:'Mesaj',
+       attachImage:'Resim ekle', linkPatient:'Hastaya bağla (isteğe bağlı)', none:'Yok', send:'Gönder', cancel:'İptal', sent:'Gönderildi',
+       deviceStatus:'Bu cihazda bildirimler', pushOn:'Açık: ekran kilitliyken bile uyarı gelir', pushOff:'Bu cihazda etkin değil',
+       pushNoConfig:'Yalnızca uygulama içi — bildirim sunucusu henüz ayarlanmadı (yönetici ayarları)', pushBlocked:'Tarayıcı ayarlarında engellendi — bu site için bildirimlere izin verin',
+       pushUnsupported:'Bu tarayıcı anlık bildirimleri desteklemiyor', iosHint:'iPhone: Paylaş → "Ana Ekrana Ekle", uygulamayı simgeden açın ve bildirimleri etkinleştirin',
+       enableOnDevice:'Bu cihazda bildirimleri etkinleştir', testAlert:'Uyarıyı test et', testTitle:'Test uyarısı', testBody:'Bu bir test — zili duyduysanız her şey çalışıyor',
+       keepAwake:'Ekranı açık tut (hemşire istasyonu)', installApp:'Uygulamayı ana ekrana yükle', pushSettings:'Bildirim sunucusu ayarları (yönetici)',
+       workerUrl:'Gönderici URL (Cloudflare Worker)', vapidKey:'Firebase Web Push anahtarı (VAPID)', save:'Kaydet', saved:'Kaydedildi',
+       justNow:'şimdi', minAgo:'dk', hourAgo:'sa', stopRing:'Zili durdur', patient:'Hasta', noPatient:'—' },
+  fa:{ newOrder:'دستور پزشکی جدید', newNote:'یادداشت جدید', urgentNote:'⚠️ یادداشت فوری', newLab:'نتیجه آزمایش جدید', newLabs:'نتایج آزمایش جدید',
+       newPatient:'بیمار جدید', messageFrom:'پیام از', urgentMessage:'⚠️ پیام فوری از', open:'باز کردن', markRead:'دیده شد',
+       markAllRead:'علامت‌گذاری همه به‌عنوان خوانده‌شده', sendMessage:'ارسال پیام', toAll:'همه (کل کادر)', recipient:'به', messageText:'متن پیام',
+       attachImage:'پیوست تصویر', linkPatient:'اتصال به بیمار (اختیاری)', none:'هیچ', send:'ارسال', cancel:'انصراف', sent:'ارسال شد',
+       deviceStatus:'وضعیت اعلان‌ها در این دستگاه', pushOn:'فعال: هشدارها حتی با صفحه قفل‌شده می‌رسند', pushOff:'در این دستگاه فعال نیست',
+       pushNoConfig:'فقط داخل برنامه — سرور اعلان هنوز تنظیم نشده (تنظیمات مدیر)', pushBlocked:'در تنظیمات مرورگر مسدود است — اعلان‌ها را برای این سایت مجاز کنید',
+       pushUnsupported:'این مرورگر از اعلان‌های خارجی پشتیبانی نمی‌کند', iosHint:'در آیفون: دکمه اشتراک ← «افزودن به صفحه اصلی»، برنامه را از آیکون باز کنید و اعلان‌ها را فعال کنید',
+       enableOnDevice:'فعال‌سازی اعلان‌ها در این دستگاه', testAlert:'آزمایش هشدار', testTitle:'هشدار آزمایشی', testBody:'این یک آزمایش است — اگر صدای زنگ را شنیدید همه چیز کار می‌کند',
+       keepAwake:'روشن نگه‌داشتن صفحه (دستگاه ایستگاه پرستاری)', installApp:'نصب برنامه روی صفحه اصلی', pushSettings:'تنظیمات سرور اعلان (مدیر)',
+       workerUrl:'آدرس سرور ارسال (Cloudflare Worker)', vapidKey:'کلید Web Push (VAPID) از Firebase', save:'ذخیره', saved:'ذخیره شد',
+       justNow:'اکنون', minAgo:'د', hourAgo:'س', stopRing:'قطع زنگ', patient:'بیمار', noPatient:'—' }
+};
+function nt(k){ return (NT[lang] && NT[lang][k]) || NT.ar[k] || k; }
+function escHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ---------- الصوت: جرس مولّد برمجيًا + اهتزاز ---------- */
+let sharedAudioCtx = null;
+function getAudioCtx(){
+  if(!sharedAudioCtx){ try{ sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){} }
+  return sharedAudioCtx;
+}
+/* المتصفحات تمنع الصوت قبل أول لمسة من المستخدم — نفتح الصوت عند أول لمسة */
+function unlockAudio(){ const c = getAudioCtx(); if(c && c.state === 'suspended') c.resume(); }
+['click','touchstart','keydown'].forEach(ev => document.addEventListener(ev, unlockAudio, { passive:true }));
+function bellStrike(ctx, at, loud){
+  [[1,1],[2.76,0.45],[5.4,0.22],[8.93,0.1]].forEach(([mult, amp]) => {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.value = 880 * mult;
+    o.connect(g); g.connect(ctx.destination);
+    const vol = (loud ? 0.4 : 0.2) * amp;
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(vol, at + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + 1.3);
+    o.start(at); o.stop(at + 1.35);
+  });
+}
+function playAlertTone(urgent){
+  const ctx = getAudioCtx();
+  if(ctx){
+    try{
+      if(ctx.state === 'suspended') ctx.resume();
+      const now = ctx.currentTime + 0.02;
+      if(urgent){ [0, 0.35, 0.7].forEach(d => bellStrike(ctx, now + d, true)); }
+      else { bellStrike(ctx, now, false); bellStrike(ctx, now + 0.3, false); }
+    }catch(err){ console.warn('alert tone failed:', err.message); }
   }
-  if(!notifNotesUnsub){
-    notifNotesUnsub = fbDb.collection('notes').onSnapshot(snap => {
-      if(!notifNotesFirstLoad){
-        snap.docChanges().forEach(change => {
-          if(change.type === 'added'){
-            const n = change.doc.data();
-            const patient = patientsCache.find(x=>x.id===n.patientId);
-            if(n.createdBy?.username !== currentUser.username && isRelevantToMe(patient)){
-              const title = n.urgent ? t('urgentNotifTitle') : t('newNoteNotifTitle');
-              showBrowserNotification({
-                kind:'note', urgent: !!n.urgent, patientId:n.patientId, patientName: patient?patient.name:'',
-                title, body: `${patient?patient.name:''}: ${(n.text||'').slice(0,60)}${n.audioData?' 🎤':''}`, tab:'tabNotes'
-              });
-            }
-          }
-        });
-      }
-      notifNotesFirstLoad = false;
-    }, err => console.warn('note notif sync error:', err.message));
+  if(navigator.vibrate){ try{ navigator.vibrate(urgent ? [400,150,400,150,400] : [200]); }catch(e){} }
+}
+/* التنبيه العاجل يرن كل 3 ثوانٍ حتى يضغط المستخدم عليه (بحد أقصى دقيقة) */
+let ringTimer = null, ringCount = 0;
+function startUrgentRinging(){
+  stopUrgentRinging(); ringCount = 0; playAlertTone(true);
+  ringTimer = setInterval(() => { if(++ringCount >= 20){ stopUrgentRinging(); return; } playAlertTone(true); }, 3000);
+}
+function stopUrgentRinging(){ if(ringTimer){ clearInterval(ringTimer); ringTimer = null; } }
+
+/* ---------- سجل التنبيهات (محفوظ على الجهاز لكل مستخدم) ---------- */
+let notificationHistory = []; // {id, kind, urgent, patientId, title, body, tab, time, sender:{name,role}, image, read}
+let unreadNotifCount = 0;
+let notifSeenBefore = 0;
+const NOTIF_HISTORY_MAX = 80;
+function notifStoreKey(s){ return 'mz_notif_' + s + '_' + (currentUser ? currentUser.id : 'x'); }
+function loadNotifHistory(){
+  try{ notificationHistory = JSON.parse(localStorage.getItem(notifStoreKey('hist')) || '[]'); }catch(e){ notificationHistory = []; }
+  updateUnreadCount();
+}
+function saveNotifHistory(){
+  const slim = (withImages) => JSON.stringify(notificationHistory.slice(0, NOTIF_HISTORY_MAX).map(n => ({ ...n, image: (withImages && n.image && n.image.length < 120000) ? n.image : null })));
+  try{ localStorage.setItem(notifStoreKey('hist'), slim(true)); }
+  catch(e){ try{ localStorage.setItem(notifStoreKey('hist'), slim(false)); }catch(_){} }
+}
+function markNotifSeenNow(){ try{ localStorage.setItem(notifStoreKey('seen'), String(Date.now())); }catch(e){} }
+setInterval(() => { if(currentUser) markNotifSeenNow(); }, 60000);
+window.addEventListener('pagehide', () => { if(currentUser) markNotifSeenNow(); });
+const BASE_DOC_TITLE = document.title;
+function updateUnreadCount(){
+  unreadNotifCount = notificationHistory.filter(n => !n.read).length;
+  const badge = document.getElementById('notifBadge');
+  if(badge){
+    badge.textContent = unreadNotifCount > 99 ? '99+' : unreadNotifCount;
+    badge.style.display = unreadNotifCount ? 'flex' : 'none';
+  }
+  const bell = document.getElementById('notifBellIcon');
+  if(bell) bell.classList.toggle('bell-ringing', unreadNotifCount > 0 && notificationHistory.some(n => !n.read && n.urgent));
+  document.title = (unreadNotifCount ? `(${unreadNotifCount}) ` : '') + BASE_DOC_TITLE;
+  try{
+    if(unreadNotifCount && navigator.setAppBadge) navigator.setAppBadge(unreadNotifCount);
+    else if(!unreadNotifCount && navigator.clearAppBadge) navigator.clearAppBadge();
+  }catch(e){}
+}
+function markNotifRead(id){
+  const n = notificationHistory.find(x => x.id === id);
+  if(n && !n.read){ n.read = true; saveNotifHistory(); updateUnreadCount(); }
+  if(swReg && swReg.getNotifications) swReg.getNotifications({ tag:id }).then(list => list.forEach(x => x.close())).catch(()=>{});
+}
+function markAllNotifsRead(){
+  notificationHistory.forEach(n => n.read = true);
+  saveNotifHistory(); updateUnreadCount(); refreshNotifPanel(); stopUrgentRinging();
+  if(swReg && swReg.getNotifications) swReg.getNotifications().then(list => list.forEach(x => x.close())).catch(()=>{});
+}
+/* للتوافق مع الكود القديم */
+function bumpNotifBadge(){ updateUnreadCount(); }
+function clearNotifBadge(){ updateUnreadCount(); }
+
+/* ---------- شكل المرسل (صورة رمزية حسب الدور مثل واتساب) ---------- */
+const ROLE_STYLE = {
+  doctor: { color:'#1E6FD9', icon:'ti-stethoscope', png:'icons/role-doctor.png' },
+  nurse:  { color:'#13A07A', icon:'ti-nurse', png:'icons/role-nurse.png' },
+  admin:  { color:'#C9930C', icon:'ti-shield-star', png:'icons/role-admin.png' },
+  system: { color:'#12554F', icon:'ti-heartbeat', png:'icons/icon-192.png' }
+};
+function roleStyle(role){ return ROLE_STYLE[role] || ROLE_STYLE.system; }
+function notifAvatarHtml(n, size){
+  const rs = roleStyle(n.sender && n.sender.role);
+  const bg = n.urgent ? '#C0392B' : rs.color;
+  const icon = n.urgent ? 'ti-alert-triangle' : rs.icon;
+  return `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${bg};color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:${Math.round(size*0.55)}px;box-shadow:0 0 0 2px rgba(255,255,255,.9);"><i class="ti ${icon}"></i></div>`;
+}
+function notifKindIcon(kind, urgent){
+  if(urgent) return 'ti-alert-triangle';
+  return ({ order:'ti-clipboard-list', note:'ti-notes', lab:'ti-flask', patient:'ti-user-plus', message:'ti-message-circle' })[kind] || 'ti-bell';
+}
+function timeAgo(ts){
+  const m = Math.floor((Date.now() - ts) / 60000);
+  if(m < 1) return nt('justNow');
+  if(m < 60) return m + ' ' + nt('minAgo');
+  if(m < 24*60) return Math.floor(m/60) + ' ' + nt('hourAgo');
+  return new Date(ts).toLocaleDateString(lang);
+}
+
+/* ---------- بطاقة التنبيه داخل التطبيق (تنزل من فوق مثل إشعار واتساب) ---------- */
+function showInAppToast(entry){
+  let wrap = document.getElementById('inAppToastWrap');
+  if(!wrap){
+    wrap = document.createElement('div');
+    wrap.id = 'inAppToastWrap';
+    wrap.style.cssText = 'position:fixed;top:10px;inset-inline:0;z-index:200;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;padding:0 10px;';
+    document.body.appendChild(wrap);
+  }
+  while(wrap.children.length >= 3) wrap.firstChild.remove();
+  const toast = document.createElement('div');
+  toast.className = 'in-app-toast' + (entry.urgent ? ' urgent' : '');
+  const senderLine = entry.sender && entry.sender.name ? `${escHtml(entry.sender.name)} <span style="opacity:.6;font-weight:400;">· ${escHtml(t(entry.sender.role) || '')}</span>` : 'M Z Smart ICU';
+  toast.innerHTML = `
+    ${notifAvatarHtml(entry, 44)}
+    <div style="flex:1;min-width:0;">
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;opacity:.75;"><span>${senderLine}</span><span>${nt('justNow')}</span></div>
+      <div style="font-weight:700;font-size:14px;margin-top:1px;">${escHtml(entry.title)}</div>
+      <div style="font-size:13px;opacity:.9;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">${escHtml(entry.body)}</div>
+      ${entry.urgent ? `<button class="toast-stop" style="margin-top:6px;padding:4px 10px;font-size:12px;background:#fff;color:#C0392B;border:none;border-radius:6px;">${nt('stopRing')}</button>` : ''}
+    </div>
+    ${entry.image ? `<img src="${entry.image}" alt="" style="width:52px;height:52px;object-fit:cover;border-radius:8px;flex-shrink:0;">` : ''}`;
+  toast.onclick = (e) => {
+    stopUrgentRinging();
+    if(e.target.classList.contains('toast-stop')){ e.stopPropagation(); toast.remove(); return; }
+    goToNotificationTarget(entry.patientId, entry.tab, entry.id);
+  };
+  wrap.appendChild(toast);
+  setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity .4s'; setTimeout(() => toast.remove(), 400); }, entry.urgent ? 30000 : 8000);
+}
+
+/* ---------- إضافة تنبيه جديد (المدخل الموحّد لكل أنواع التنبيهات) ---------- */
+function addNotification(entry, opts){
+  if(!entry || !entry.id) return;
+  if(notificationHistory.some(n => n.id === entry.id)) return;
+  entry.read = false;
+  entry.time = entry.time || Date.now();
+  notificationHistory.unshift(entry);
+  notificationHistory.sort((a,b) => b.time - a.time);
+  if(notificationHistory.length > NOTIF_HISTORY_MAX) notificationHistory.length = NOTIF_HISTORY_MAX;
+  saveNotifHistory(); updateUnreadCount(); refreshNotifPanel();
+  if(opts && opts.silent) return; // تنبيه فاتك والتطبيق مغلق — يُضاف للسجل بدون رنين
+  markNotifSeenNow();
+  if(document.visibilityState === 'visible'){
+    showInAppToast(entry);
+    if(entry.urgent) startUrgentRinging(); else playAlertTone(false);
+  } else {
+    showSystemNotification(entry); // التطبيق مفتوح بالخلفية / الشاشة مقفلة
   }
 }
+/* للتوافق مع الكود القديم */
+function showBrowserNotification(entry){ addNotification({ id: entry.id || uid(), ...entry }); }
+
+/* إشعار نظام (يظهر بشريط الإشعارات فوق وعلى شاشة القفل) */
+function buildSystemNotifOptions(entry){
+  const rs = roleStyle(entry.sender && entry.sender.role);
+  const opts = {
+    body: (entry.sender && entry.sender.name ? entry.sender.name + ': ' : '') + entry.body,
+    icon: entry.urgent ? 'icons/urgent.png' : rs.png,
+    badge: 'icons/badge-96.png',
+    tag: entry.id,
+    renotify: false,
+    requireInteraction: !!entry.urgent,
+    silent: false,
+    vibrate: entry.urgent ? [500,200,500,200,500,200,500] : [250,100,250],
+    timestamp: entry.time,
+    dir: document.documentElement.dir || 'rtl',
+    lang: lang,
+    data: { id: entry.id, patientId: entry.patientId || '', tab: entry.tab || '', url: notifDeepLink(entry) },
+    actions: [{ action:'open', title: nt('open') }, { action:'read', title: nt('markRead') }]
+  };
+  if(entry.image && entry.image.length < 400000) opts.image = entry.image;
+  return opts;
+}
+function showSystemNotification(entry){
+  if(!('Notification' in window) || Notification.permission !== 'granted') return;
+  const opts = buildSystemNotifOptions(entry);
+  if(swReg && swReg.showNotification){ swReg.showNotification(entry.title, opts).catch(err => console.warn('sw notification failed:', err.message)); return; }
+  try{
+    const sysNotif = new Notification(entry.title, opts);
+    sysNotif.onclick = () => { window.focus(); goToNotificationTarget(entry.patientId, entry.tab, entry.id); };
+  }catch(err){ console.warn('notification failed:', err.message); }
+}
+function notifDeepLink(entry){
+  return './#go=' + encodeURIComponent([entry.patientId || '', entry.tab || '', entry.id || ''].join('|'));
+}
+
+/* ---------- الانتقال للمكان المطلوب عند الضغط ---------- */
+let pendingNotifGo = null;
+(function readDeepLinkFromUrl(){
+  const m = (location.hash || '').match(/^#go=(.*)$/);
+  if(!m) return;
+  const [patientId, tab, id] = decodeURIComponent(m[1]).split('|');
+  pendingNotifGo = { patientId, tab, id };
+  history.replaceState(null, '', location.pathname + location.search);
+})();
+function runPendingNotifGo(){
+  if(!pendingNotifGo || !currentUser) return;
+  if(pendingNotifGo.patientId && !patientsCache.some(p => p.id === pendingNotifGo.patientId)) return; // ننتظر تحميل المرضى
+  const g = pendingNotifGo; pendingNotifGo = null;
+  setTimeout(() => goToNotificationTarget(g.patientId, g.tab, g.id), 0);
+}
+function goToNotificationTarget(patientId, tab, id){
+  stopUrgentRinging();
+  if(id) markNotifRead(id);
+  closeNotifPanel();
+  document.querySelectorAll('.in-app-toast').forEach(el => el.remove());
+  if(!patientId){ toggleNotifPanel(); return; } // رسالة عامة بدون مريض → نعرض لوحة التنبيهات
+  if(!patientsCache.some(p => p.id === patientId)){ pendingNotifGo = { patientId, tab, id }; return; }
+  openPatient(patientId);
+  currentTab = tab || 'tabOverview';
+  render();
+}
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if(d.type === 'go') goToNotificationTarget(d.patientId, d.tab, d.id);
+    if(d.type === 'read' && d.id) markNotifRead(d.id);
+  });
+}
+
+/* ---------- Service Worker + Web Push (Firebase Cloud Messaging) ---------- */
+let swReg = null;
+let pushConfig = { workerUrl:'', vapidKey:'' };
+let pushConfigUnsub = null;
+let pushState = 'off'; // ok | off | noconfig | denied | unsupported | ios-install
+async function registerServiceWorker(){
+  if(!('serviceWorker' in navigator) || !/^https?:/.test(location.protocol)) return null;
+  try{ swReg = await navigator.serviceWorker.register('./sw.js', { scope:'./' }); }
+  catch(err){ console.warn('service worker registration failed:', err.message); }
+  return swReg;
+}
+registerServiceWorker();
+function isIOS(){ return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+function isStandalone(){ return window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; }
+function subscribePushConfig(){
+  if(pushConfigUnsub) return;
+  pushConfigUnsub = fbDb.collection('settings').doc('push').onSnapshot(doc => {
+    pushConfig = doc.exists ? { workerUrl:'', vapidKey:'', ...doc.data() } : { workerUrl:'', vapidKey:'' };
+    initPushOnThisDevice(false);
+  }, err => console.warn('push config sync error:', err.message));
+}
+async function initPushOnThisDevice(askPermission){
+  if(!('Notification' in window) || !('serviceWorker' in navigator)){
+    pushState = (isIOS() && !isStandalone()) ? 'ios-install' : 'unsupported'; refreshNotifPanel(); return pushState;
+  }
+  if(askPermission && Notification.permission === 'default'){ try{ await Notification.requestPermission(); }catch(e){} render(); }
+  if(Notification.permission === 'denied'){ pushState = 'denied'; refreshNotifPanel(); return pushState; }
+  if(Notification.permission !== 'granted'){ pushState = 'off'; refreshNotifPanel(); return pushState; }
+  if(!pushConfig.vapidKey || !pushConfig.workerUrl){ pushState = 'noconfig'; refreshNotifPanel(); return pushState; }
+  try{
+    if(!firebase.messaging || !(await firebase.messaging.isSupported())){ pushState = (isIOS() && !isStandalone()) ? 'ios-install' : 'unsupported'; refreshNotifPanel(); return pushState; }
+    const reg = swReg || await registerServiceWorker() || await navigator.serviceWorker.ready;
+    const token = await firebase.messaging().getToken({ vapidKey: pushConfig.vapidKey.trim(), serviceWorkerRegistration: reg });
+    if(token && currentUser){
+      const prev = localStorage.getItem('mz_push_token');
+      const update = { fcmTokens: firebase.firestore.FieldValue.arrayUnion(token), pushUpdatedAt: Date.now() };
+      await fbDb.collection('users').doc(currentUser.id).set(update, { merge:true });
+      if(prev && prev !== token) fbDb.collection('users').doc(currentUser.id).set({ fcmTokens: firebase.firestore.FieldValue.arrayRemove(prev) }, { merge:true }).catch(()=>{});
+      localStorage.setItem('mz_push_token', token);
+      pushState = 'ok';
+    }
+  }catch(err){ console.warn('push token failed:', err.message); pushState = 'off'; }
+  refreshNotifPanel();
+  return pushState;
+}
+async function removePushTokenOnLogout(){
+  const token = localStorage.getItem('mz_push_token');
+  if(!token || !currentUser) return;
+  try{ await fbDb.collection('users').doc(currentUser.id).set({ fcmTokens: firebase.firestore.FieldValue.arrayRemove(token) }, { merge:true }); }catch(e){}
+  try{ if(firebase.messaging) await firebase.messaging().deleteToken(); }catch(e){}
+  localStorage.removeItem('mz_push_token');
+}
+async function savePushConfig(){
+  const workerUrl = (document.getElementById('push_worker').value || '').trim();
+  const vapidKey = (document.getElementById('push_vapid').value || '').trim();
+  const st = document.getElementById('push_cfg_status');
+  try{
+    await fbDb.collection('settings').doc('push').set({ workerUrl, vapidKey, updatedAt: Date.now() });
+    if(st) st.textContent = nt('saved');
+  }catch(err){ if(st) st.textContent = err.message; }
+}
+
+/* ---------- دليل المستخدمين (لمعرفة من يستلم التنبيه وأجهزته) ---------- */
+let usersDirectory = [];
+let usersDirUnsub = null;
+function subscribeUsersDirectory(){
+  if(usersDirUnsub) return;
+  usersDirUnsub = fbDb.collection('users').onSnapshot(snap => {
+    usersDirectory = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+  }, err => console.warn('users directory sync error:', err.message));
+}
+/* من يجب أن يُنبَّه لأي حدث يخص مريضًا: المدير + الطبيب المسؤول + ممرض الوردية الحالية
+   (إذا لم يُعيَّن طبيب → كل الأطباء، وإذا لم يُعيَّن ممرض للوردية → كل الممرضين) */
+function recipientsForPatient(patient){
+  const ids = new Set(usersDirectory.filter(u => u.role === 'admin').map(u => u.id));
+  const doctorUid = patient && patient.assignedDoctor && patient.assignedDoctor.uid;
+  const nurse = getCurrentShiftNurse(patient);
+  if(doctorUid) ids.add(doctorUid); else usersDirectory.filter(u => u.role === 'doctor').forEach(u => ids.add(u.id));
+  if(nurse && nurse.uid) ids.add(nurse.uid); else usersDirectory.filter(u => u.role === 'nurse').forEach(u => ids.add(u.id));
+  return [...ids];
+}
+/* إرسال إشعار نظام لأجهزة المستلمين (يصل والشاشة مقفلة أو التطبيق مغلق) */
+async function sendPushTo(recipientIds, entry){
+  if(!pushConfig.workerUrl || !currentUser || !fbAuth.currentUser) return;
+  const targets = usersDirectory.filter(u => recipientIds.includes(u.id) && u.id !== currentUser.id);
+  const tokens = [...new Set(targets.flatMap(u => u.fcmTokens || []))];
+  if(!tokens.length) return;
+  const rs = roleStyle(entry.sender && entry.sender.role);
+  const data = {
+    id: entry.id, title: entry.title, body: (entry.sender && entry.sender.name ? entry.sender.name + ': ' : '') + entry.body,
+    urgent: entry.urgent ? '1' : '0', kind: entry.kind || '', patientId: entry.patientId || '', tab: entry.tab || '',
+    icon: entry.urgent ? 'icons/urgent.png' : rs.png, url: notifDeepLink(entry), time: String(entry.time || Date.now())
+  };
+  try{
+    const idToken = await fbAuth.currentUser.getIdToken();
+    const res = await fetch(pushConfig.workerUrl, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ idToken, tokens, data }) });
+    const out = await res.json().catch(() => ({}));
+    if(out.invalid && out.invalid.length){ // إزالة أجهزة لم تعد موجودة
+      targets.forEach(u => {
+        const bad = (u.fcmTokens || []).filter(tk => out.invalid.includes(tk));
+        if(bad.length) fbDb.collection('users').doc(u.id).set({ fcmTokens: firebase.firestore.FieldValue.arrayRemove(...bad) }, { merge:true }).catch(()=>{});
+      });
+    }
+  }catch(err){ console.warn('push send failed:', err.message); }
+}
+/* يُستدعى بعد حفظ أي حدث جديد (أمر، ملاحظة، تحليل، مريض، رسالة) */
+function notifyOthers(kind, docId, data, recipientIds){
+  try{
+    const entry = buildNotifEntry(kind, docId, data);
+    if(!entry) return;
+    let ids = recipientIds;
+    if(!ids){
+      if(kind === 'patient') ids = usersDirectory.map(u => u.id);
+      else ids = recipientsForPatient(patientsCache.find(p => p.id === data.patientId));
+    }
+    sendPushTo(ids, entry);
+  }catch(err){ console.warn('notifyOthers failed:', err.message); }
+}
+
+/* ---------- تحويل أي مستند من Firestore إلى تنبيه ---------- */
+function isMineDoc(by){
+  if(!by || !currentUser) return false;
+  if(by.uid) return by.uid === currentUser.id;
+  if(by.username) return by.username === currentUser.username;
+  return by.name === currentUser.name && by.role === currentUser.role;
+}
+function imageOf(d){
+  if(d.image) return d.image;
+  if(d.fileData && /^image\//.test(d.fileMimeType || '') && d.fileData.length < 400000) return d.fileData;
+  return null;
+}
+function buildNotifEntry(kind, id, d){
+  const patient = patientsCache.find(p => p.id === (kind === 'patient' ? id : d.patientId));
+  const pname = patient ? patient.name : (kind === 'patient' ? d.name : '');
+  const sender = d.createdBy || d.admittedBy || null;
+  switch(kind){
+    case 'order': return { id, kind, urgent:true, patientId:d.patientId, tab:'tabOrders', sender, time:d.time,
+      title: nt('newOrder'), body: `${d.medName || ''} ${d.dose || ''} — ${pname}`.trim() };
+    case 'note': return { id, kind, urgent:!!d.urgent, patientId:d.patientId, tab:'tabNotes', sender, time:d.time, image: imageOf(d),
+      title: d.urgent ? nt('urgentNote') : nt('newNote'), body: `${pname}: ${(d.text || '').slice(0, 90)}${d.audioData ? ' 🎤' : ''}${d.fileData ? ' 📎' : ''}` };
+    case 'lab': return { id, kind, urgent:false, patientId:d.patientId, tab:'tabLabs', sender, time:d.time,
+      title: d.count > 1 ? nt('newLabs') : nt('newLab'), body: d.count > 1 ? `${d.count} — ${pname}` : `${d.testType || ''}: ${d.value || ''} — ${pname}` };
+    case 'patient': return { id, kind, urgent:false, patientId:id, tab:'tabOverview', sender, time:d.admittedAt || d.time,
+      title: nt('newPatient'), body: `${d.name || ''}${d.diagnosis ? ' — ' + d.diagnosis : ''}` };
+    case 'message': return { id, kind, urgent:!!d.urgent, patientId:d.patientId || '', tab: d.patientId ? 'tabNotes' : '', sender, time:d.time, image: d.image || null,
+      title: `${d.urgent ? nt('urgentMessage') : nt('messageFrom')} ${sender ? sender.name : ''}`, body: (d.text || '') + (pname ? ` — ${nt('patient')}: ${pname}` : '') };
+  }
+  return null;
+}
+
+/* ---------- الاستماع للأحداث الجديدة من كل الأجهزة ---------- */
+const notifSubs = {};
+function watchForNotifications(key, query, kind, isRelevant){
+  if(notifSubs[key]) return;
+  let first = true;
+  notifSubs[key] = query.onSnapshot(snap => {
+    snap.docChanges().forEach(ch => {
+      if(ch.type !== 'added') return;
+      const d = ch.doc.data();
+      if(isMineDoc(d.createdBy || d.admittedBy)) return;
+      if(!isRelevant(d, ch.doc.id)) return;
+      const entry = buildNotifEntry(kind, ch.doc.id, d);
+      if(!entry) return;
+      if(first){ if((entry.time || 0) > notifSeenBefore) addNotification(entry, { silent:true }); }
+      else addNotification(entry);
+    });
+    first = false;
+  }, err => console.warn(key + ' notif sync error:', err.message));
+}
+function subscribeNotifications(){
+  if(!currentUser) return;
+  loadNotifHistory();
+  notifSeenBefore = Number(localStorage.getItem(notifStoreKey('seen')) || 0) || Date.now();
+  subscribeUsersDirectory();
+  subscribePushConfig();
+  const relevantByPatient = d => isRelevantToMe(patientsCache.find(p => p.id === d.patientId));
+  watchForNotifications('orders', fbDb.collection('orders'), 'order', relevantByPatient);
+  watchForNotifications('notes', fbDb.collection('notes'), 'note', relevantByPatient);
+  watchForNotifications('labs', fbDb.collection('labs'), 'lab', relevantByPatient);
+  watchForNotifications('patients', fbDb.collection('patients'), 'patient', () => true);
+  watchForNotifications('messages', fbDb.collection('messages').where('recipients', 'array-contains-any', [currentUser.id, 'all']), 'message', () => true);
+  applyWakeLock();
+}
 function unsubscribeNotifications(){
-  if(notifOrdersUnsub){ notifOrdersUnsub(); notifOrdersUnsub = null; notifOrdersFirstLoad = true; }
-  if(notifNotesUnsub){ notifNotesUnsub(); notifNotesUnsub = null; notifNotesFirstLoad = true; }
+  Object.keys(notifSubs).forEach(k => { try{ notifSubs[k](); }catch(e){} delete notifSubs[k]; });
+  if(usersDirUnsub){ usersDirUnsub(); usersDirUnsub = null; }
+  if(pushConfigUnsub){ pushConfigUnsub(); pushConfigUnsub = null; }
+  stopUrgentRinging();
+  if(currentUser) markNotifSeenNow();
+  notificationHistory = []; updateUnreadCount();
+}
+
+/* ---------- إبقاء الشاشة مضاءة (Wake Lock) ---------- */
+let wakeLock = null;
+let wakeWanted = localStorage.getItem('mz_wake') === '1';
+async function applyWakeLock(){
+  if(!('wakeLock' in navigator)) return;
+  if(wakeWanted && document.visibilityState === 'visible' && !wakeLock){
+    try{ wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); }catch(e){}
+  } else if(!wakeWanted && wakeLock){ try{ await wakeLock.release(); }catch(e){} wakeLock = null; }
+}
+function toggleWakeLock(on){ wakeWanted = !!on; localStorage.setItem('mz_wake', on ? '1' : '0'); applyWakeLock(); }
+document.addEventListener('visibilitychange', applyWakeLock);
+
+/* ---------- تثبيت التطبيق على الشاشة الرئيسية ---------- */
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstallPrompt = e; refreshNotifPanel(); });
+async function promptInstallApp(){
+  if(!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  try{ await deferredInstallPrompt.userChoice; }catch(e){}
+  deferredInstallPrompt = null; refreshNotifPanel();
+}
+
+/* ---------- لوحة التنبيهات (عند الضغط على الجرس فوق) ---------- */
+function requestNotificationPermission(){ initPushOnThisDevice(true); }
+function onNotifBellClick(){
+  unlockAudio();
+  stopUrgentRinging();
+  if('Notification' in window && Notification.permission === 'default') initPushOnThisDevice(true);
+  toggleNotifPanel();
+}
+function toggleNotifPanel(){
+  const existing = document.getElementById('notifPanel');
+  if(existing){ closeNotifPanel(); return; }
+  const panel = document.createElement('div');
+  panel.id = 'notifPanel';
+  panel.style.cssText = 'position:fixed;top:56px;inset-inline-end:10px;z-index:150;background:#fff;border-radius:14px;box-shadow:0 12px 34px rgba(0,0,0,.28);width:360px;max-width:95vw;max-height:78vh;overflow-y:auto;';
+  document.body.appendChild(panel);
+  refreshNotifPanel();
+  setTimeout(() => { document.addEventListener('click', closeNotifPanelOnOutsideClick); }, 0);
+}
+function closeNotifPanelOnOutsideClick(e){
+  const panel = document.getElementById('notifPanel');
+  const bell = document.getElementById('notifBtn');
+  const modal = document.getElementById('sendMsgModal');
+  if(panel && !panel.contains(e.target) && !bell.contains(e.target) && !(modal && modal.contains(e.target))) closeNotifPanel();
+}
+function closeNotifPanel(){
+  const panel = document.getElementById('notifPanel');
+  if(panel) panel.remove();
+  document.removeEventListener('click', closeNotifPanelOnOutsideClick);
+}
+function pushStatusHtml(){
+  const map = { ok:['ti-bell-ringing','#13A07A', nt('pushOn')], noconfig:['ti-bell','#8A5A0B', nt('pushNoConfig')], denied:['ti-bell-x','#A32D2D', nt('pushBlocked')],
+                unsupported:['ti-bell-off','#8A9391', nt('pushUnsupported')], 'ios-install':['ti-device-mobile','#8A5A0B', nt('iosHint')], off:['ti-bell','#8A5A0B', nt('pushOff')] };
+  const [icon, color, text] = map[pushState] || map.off;
+  const showEnable = pushState === 'off' || (('Notification' in window) && Notification.permission === 'default');
+  return `<div style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:${color};"><i class="ti ${icon}" style="font-size:18px;"></i><div style="flex:1;">${text}</div></div>
+    ${showEnable ? `<button style="width:100%;margin-top:8px;" onclick="initPushOnThisDevice(true)"><i class="ti ti-bell-plus"></i> ${nt('enableOnDevice')}</button>` : ''}`;
+}
+function refreshNotifPanel(){
+  const panel = document.getElementById('notifPanel');
+  if(!panel) return;
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  const list = notificationHistory.length ? notificationHistory.map(n => `
+      <div onclick="goToNotificationTarget('${escHtml(n.patientId||'')}','${escHtml(n.tab||'')}','${escHtml(n.id)}')" class="notif-row${n.read ? '' : ' unread'}">
+        ${notifAvatarHtml(n, 40)}
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;gap:6px;">
+            <div style="font-weight:${n.read?500:700};font-size:13.5px;">${escHtml(n.title)}</div>
+            <div class="muted" style="font-size:11px;white-space:nowrap;">${timeAgo(n.time)}</div>
+          </div>
+          ${n.sender && n.sender.name ? `<div class="muted" style="font-size:11.5px;">${escHtml(n.sender.name)} · ${escHtml(t(n.sender.role)||'')}</div>` : ''}
+          <div style="font-size:12.5px;color:var(--text-muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">${escHtml(n.body)}</div>
+        </div>
+        ${n.image ? `<img src="${n.image}" alt="" style="width:44px;height:44px;object-fit:cover;border-radius:8px;flex-shrink:0;">` : ''}
+        ${n.read ? '' : '<span class="unread-dot"></span>'}
+      </div>`).join('') : `<div style="padding:24px;text-align:center;" class="muted">${t('noNotifications')}</div>`;
+  panel.innerHTML = `
+    <div style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);position:sticky;top:0;background:#fff;z-index:1;">
+      <b>${t('notificationsTitle')}</b>
+      <div style="display:flex;gap:6px;">
+        <button class="secondary" style="padding:4px 8px;font-size:12px;" title="${nt('sendMessage')}" onclick="openSendMessage()"><i class="ti ti-message-plus"></i></button>
+        ${unreadNotifCount ? `<button class="secondary" style="padding:4px 8px;font-size:12px;" title="${nt('markAllRead')}" onclick="markAllNotifsRead()"><i class="ti ti-checks"></i></button>` : ''}
+      </div>
+    </div>
+    <div>${list}</div>
+    <div style="padding:12px 14px;border-top:1px solid var(--border);background:#F7F9F8;">
+      <div class="muted" style="font-size:11.5px;font-weight:600;margin-bottom:6px;">${nt('deviceStatus')}</div>
+      ${pushStatusHtml()}
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+        <button class="secondary" style="padding:5px 10px;font-size:12px;" onclick="testNotification()"><i class="ti ti-bell-ringing"></i> ${nt('testAlert')}</button>
+        ${deferredInstallPrompt ? `<button class="secondary" style="padding:5px 10px;font-size:12px;" onclick="promptInstallApp()"><i class="ti ti-download"></i> ${nt('installApp')}</button>` : ''}
+      </div>
+      ${('wakeLock' in navigator) ? `<label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:12.5px;cursor:pointer;"><input type="checkbox" ${wakeWanted?'checked':''} onchange="toggleWakeLock(this.checked)" style="width:auto;"> ${nt('keepAwake')}</label>` : ''}
+      ${isAdmin ? `
+        <details style="margin-top:10px;"><summary style="cursor:pointer;font-size:12.5px;font-weight:600;">${nt('pushSettings')}</summary>
+          <div class="field" style="margin-top:8px;"><label style="font-size:12px;">${nt('workerUrl')}</label><input id="push_worker" dir="ltr" value="${escHtml(pushConfig.workerUrl||'')}" placeholder="https://mz-icu-push.xxxx.workers.dev"></div>
+          <div class="field"><label style="font-size:12px;">${nt('vapidKey')}</label><input id="push_vapid" dir="ltr" value="${escHtml(pushConfig.vapidKey||'')}" placeholder="BExxxx..."></div>
+          <button style="width:100%;" onclick="savePushConfig()">${nt('save')}</button>
+          <div id="push_cfg_status" class="muted" style="font-size:12px;margin-top:4px;"></div>
+        </details>` : ''}
+    </div>`;
+}
+function testNotification(){
+  const entry = { id:'test_' + Date.now(), kind:'message', urgent:true, patientId:'', tab:'', time:Date.now(),
+    sender:{ name: currentUser ? currentUser.name : 'M Z Smart ICU', role: currentUser ? currentUser.role : 'system' },
+    title: nt('testTitle'), body: nt('testBody') };
+  unlockAudio();
+  showInAppToast(entry); startUrgentRinging();
+  setTimeout(() => showSystemNotification({ ...entry, id: entry.id + '_sys' }), 400);
+  if(pushConfig.workerUrl && currentUser) setTimeout(() => sendPushToSelf(entry), 600);
+}
+/* تجربة الإرسال الخارجي لنفس الجهاز: اقفل الشاشة خلال 5 ثوانٍ وسيصلك إشعار */
+async function sendPushToSelf(entry){
+  const me = usersDirectory.find(u => u.id === currentUser.id);
+  const tokens = (me && me.fcmTokens) || [];
+  if(!tokens.length || !fbAuth.currentUser) return;
+  try{
+    const idToken = await fbAuth.currentUser.getIdToken();
+    setTimeout(() => fetch(pushConfig.workerUrl, { method:'POST', headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ idToken, tokens, data: { id: entry.id + '_push', title: entry.title, body: entry.body, urgent:'1', kind:'message', patientId:'', tab:'', icon:'icons/urgent.png', url:'./', time:String(Date.now()) } }) }).catch(()=>{}), 5000);
+  }catch(e){}
+}
+
+/* ---------- إرسال رسالة لزميل أو للجميع (مع صورة اختيارية) ---------- */
+let sendMsgImage = null;
+function openSendMessage(){
+  closeNotifPanel();
+  const others = usersDirectory.filter(u => !currentUser || u.id !== currentUser.id);
+  const activePatients = patientsCache.filter(p => !p.discharged && !p.dischargedAt);
+  const modal = document.createElement('div');
+  modal.id = 'sendMsgModal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:250;display:flex;align-items:center;justify-content:center;padding:14px;';
+  modal.innerHTML = `
+    <div class="card" style="width:420px;max-width:100%;max-height:92vh;overflow-y:auto;margin:0;">
+      <h3 style="margin-top:0;"><i class="ti ti-message-plus"></i> ${nt('sendMessage')}</h3>
+      <div class="field"><label>${nt('recipient')}</label>
+        <select id="msg_to"><option value="all">${nt('toAll')}</option>
+          ${others.map(u => `<option value="${escHtml(u.id)}">${escHtml(u.name || u.username)} — ${escHtml(t(u.role))}</option>`).join('')}
+        </select></div>
+      <div class="field"><label>${nt('messageText')}</label><textarea id="msg_text" rows="3"></textarea></div>
+      <div class="field"><label>${nt('linkPatient')}</label>
+        <select id="msg_patient"><option value="">${nt('none')}</option>
+          ${activePatients.map(p => `<option value="${escHtml(p.id)}">${escHtml(p.name)}${p.bed ? ' — ' + escHtml(p.bed) : ''}</option>`).join('')}
+        </select></div>
+      <div class="field"><label>${t('urgencyLevel')}</label>
+        <select id="msg_urgent"><option value="0">${t('nonUrgent')}</option><option value="1">${t('urgent')}</option></select></div>
+      <div class="field"><label>${nt('attachImage')}</label><input type="file" accept="image/*" onchange="onMsgImagePicked(this)"><div id="msg_img_prev" style="margin-top:6px;"></div></div>
+      <div style="display:flex;gap:8px;">
+        <button style="flex:1;" onclick="sendTeamMessage()"><i class="ti ti-send"></i> ${nt('send')}</button>
+        <button class="secondary" onclick="closeSendMessage()">${nt('cancel')}</button>
+      </div>
+      <div id="msg_status" class="muted" style="font-size:12.5px;margin-top:6px;"></div>
+    </div>`;
+  modal.addEventListener('click', e => { if(e.target === modal) closeSendMessage(); });
+  document.body.appendChild(modal);
+}
+function closeSendMessage(){ const m = document.getElementById('sendMsgModal'); if(m) m.remove(); sendMsgImage = null; }
+/* تصغير الصورة قبل الحفظ (حتى ما تثقل قاعدة البيانات) */
+function compressImageFile(file, maxSide, quality){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = reject; img.src = url;
+  });
+}
+async function onMsgImagePicked(input){
+  const f = input.files && input.files[0];
+  if(!f) return;
+  try{
+    sendMsgImage = await compressImageFile(f, 900, 0.72);
+    document.getElementById('msg_img_prev').innerHTML = `<img src="${sendMsgImage}" style="max-width:120px;border-radius:8px;">`;
+  }catch(e){ sendMsgImage = null; }
+}
+async function sendTeamMessage(){
+  const text = document.getElementById('msg_text').value.trim();
+  if(!text && !sendMsgImage) return;
+  const to = document.getElementById('msg_to').value;
+  const data = {
+    text, urgent: document.getElementById('msg_urgent').value === '1',
+    recipients: to === 'all' ? ['all'] : [to],
+    patientId: document.getElementById('msg_patient').value || null,
+    image: sendMsgImage || null,
+    time: Date.now(), createdBy: currentActor()
+  };
+  const st = document.getElementById('msg_status');
+  try{
+    const ref = await fbDb.collection('messages').add(data);
+    const ids = to === 'all' ? usersDirectory.map(u => u.id) : [to];
+    notifyOthers('message', ref.id, data, ids);
+    if(st) st.textContent = nt('sent');
+    setTimeout(closeSendMessage, 600);
+  }catch(err){ if(st) st.textContent = err.message; }
 }
 
 let patientsUnsubscribe = null;
@@ -2712,12 +3251,13 @@ async function saveNewPatient(){
     allergies: chipValue('np_allergies'),
     plannedMeds: chipValue('np_planned'),
     diagnosis: document.getElementById('np_diagnosis').value,
-    admittedBy: { name: currentUser.name, role: currentUser.role },
+    admittedBy: currentActor(),
     admittedAt: Date.now()
   };
   const wrap = document.getElementById('addPatientFormWrap');
   try{
-    await fbDb.collection('patients').add(p);
+    const patientRef = await fbDb.collection('patients').add(p);
+    notifyOthers('patient', patientRef.id, p);
     wrap.innerHTML = '';
   }catch(err){
     wrap.innerHTML += `<div class="alert-box" style="font-family:var(--font-mono);font-size:12px;direction:ltr;word-break:break-all;">${(err.message||'').replace(/</g,'&lt;')}</div>`;
@@ -3398,7 +3938,7 @@ function onVitalsMicClick(){
 }
 
 function currentActor(){
-  return { name: currentUser.name, role: currentUser.role };
+  return { name: currentUser.name, role: currentUser.role, uid: currentUser.id, username: currentUser.username || '' };
 }
 function formatCreatedBy(createdBy){
   if(!createdBy) return `<span class="muted">${t('unknown')}</span>`;
@@ -3463,7 +4003,9 @@ function renderLabsTab(el, p, db){
 }
 
 async function saveLab(patientId){
-  await fbDb.collection('labs').add({ patientId, testType: document.getElementById('l_type').value, value: document.getElementById('l_value').value, time: Date.now(), createdBy: currentActor() });
+  const labData = { patientId, testType: document.getElementById('l_type').value, value: document.getElementById('l_value').value, time: Date.now(), createdBy: currentActor() };
+  const labRef = await fbDb.collection('labs').add(labData);
+  notifyOthers('lab', labRef.id, labData);
 }
 
 function fileToBase64(file){
@@ -3531,7 +4073,7 @@ async function confirmSaveExtractedLabs(patientId){
       count++;
     }
   });
-  if(count) await batch.commit();
+  if(count){ await batch.commit(); notifyOthers('lab', 'labs_' + uid(), { patientId, count, time: Date.now(), createdBy: currentActor() }); }
   document.getElementById('labExtractReview').innerHTML = '';
 }
 
@@ -3654,7 +4196,7 @@ function applyCalculatedDose(){
 
 async function saveOrder(patientId){
   const freq = Number(document.getElementById('o_freq').value);
-  await fbDb.collection('orders').add({
+  const orderData = {
     patientId,
     medName: document.getElementById('o_med').value,
     dose: document.getElementById('o_dose').value,
@@ -3663,7 +4205,9 @@ async function saveOrder(patientId){
     doctorId: currentUser.id,
     createdBy: currentActor(),
     time: Date.now()
-  });
+  };
+  const orderRef = await fbDb.collection('orders').add(orderData);
+  notifyOthers('order', orderRef.id, orderData);
 }
 async function markOrderDone(orderId, patientId){
   await fbDb.collection('orders').doc(orderId).update({ status: 'done', doneBy: currentActor(), doneAt: Date.now() });
@@ -4168,13 +4712,15 @@ async function onNoteFileSelected(input){
   }
 }
 async function saveNote(patientId){
-  await fbDb.collection('notes').add({
+  const noteData = {
     patientId, noteType: document.getElementById('n_type').value, text: document.getElementById('n_text').value,
     urgent: document.getElementById('n_urgent').value === '1',
     audioData: currentNoteAudioBase64 || null,
     fileData: currentNoteFileData || null, fileName: currentNoteFileName || null, fileMimeType: currentNoteFileMime || null,
     time: Date.now(), createdBy: currentActor()
-  });
+  };
+  const noteRef = await fbDb.collection('notes').add(noteData);
+  notifyOthers('note', noteRef.id, noteData);
   currentNoteAudioBase64 = null;
   currentNoteFileData = null; currentNoteFileName = null; currentNoteFileMime = null;
 }
